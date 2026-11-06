@@ -1,0 +1,251 @@
+[
+  {
+    "updatedAt": "2026-11-05T20:37:17.000Z",
+    "createdAt": "2026-11-05T07:15:12.068Z",
+    "id": "0uPmTdCytfVTjCnH",
+    "name": "5.05.3 DS - Pinecone Upload Workflow",
+    "description": null,
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "pinecone-upload",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "id": "73ab1848-8090-4805-9b48-7298c9aab089",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [
+          0,
+          0
+        ],
+        "webhookId": "pinecone-upload-webhook"
+      },
+      {
+        "parameters": {
+          "functionCode": "const body = $input.item.json.body || $input.item.json;\nconst files = body.files || [];\nconst namespace = body.namespace || 'default';\n\nif (!Array.isArray(files) || files.length === 0) {\n  throw new Error('files array is required. Format: {\"files\": [{\"fileName\": \"test.txt\", \"text\": \"content...\"}], \"namespace\": \"default\"}');\n}\n\nreturn files.map(file => ({\n  json: {\n    fileName: file.fileName || 'unknown.txt',\n    text: file.text || file.content || '',\n    source: (file.fileName || 'unknown').replace('.txt', ''),\n    namespace: namespace\n  }\n}));"
+        },
+        "id": "eab462fc-da85-46c6-adf1-55fbde2d288a",
+        "name": "Parse Input",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          176,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "functionCode": "const inputItems = $input.all();\n\nreturn inputItems.map((inputItem, inputIndex) => {\n  const inputData = inputItem.json || {};\n  const text = inputData.text;\n  const source = inputData.source || inputData.fileName || 'unknown';\n  const namespace = inputData.namespace || 'default';\n\n  if (!text || typeof text !== 'string') {\n    throw new Error(`Text field is required. File: ${source}`);\n  }\n\n  const chunkSize = 600;\n  const overlap = 100;\n  const chunks = [];\n  let index = 0;\n\n  for (let i = 0; i < text.length; i += chunkSize - overlap) {\n    const chunk = text.slice(i, i + chunkSize);\n    if (chunk.trim().length > 0) {\n      chunks.push({\n        id: `chunk_${source}_${index}`,\n        text: chunk,\n        chunk_index: index,\n        source: source\n      });\n      index++;\n    }\n  }\n\n  return {\n    json: {\n      chunks: chunks,\n      namespace: namespace,\n      source: source\n    },\n    pairedItem: { item: inputIndex }\n  };\n});"
+        },
+        "id": "efd05d66-0fe6-4e23-ac92-343b307bd563",
+        "name": "Chunk Text",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          336,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "functionCode": "const fileItems = $input.all();\n\nreturn fileItems.map((item, itemIndex) => {\n  const { chunks, namespace, source } = item.json;\n  if (!Array.isArray(chunks) || chunks.length === 0) {\n    throw new Error(`No chunks were created for file ${source || itemIndex + 1}`);\n  }\n\n  const documents = chunks.map(chunk => ({\n    _id: chunk.id,\n    chunk_text: chunk.text,\n    title: source,\n    source,\n    chunk_index: chunk.chunk_index\n  }));\n\n  return {\n    json: { documents, namespace, documentsCount: documents.length },\n    pairedItem: { item: itemIndex }\n  };\n});"
+        },
+        "id": "9780bf7f-b962-445e-8043-6b5e4cee1125",
+        "name": "Format for Pinecone",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          496,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ 'https://n8n-ai-index-1pi8qek.svc.aped-4627-b74a.pinecone.io/namespaces/' + encodeURIComponent($json.namespace) + '/documents/upsert' }}",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "X-Pinecone-Api-Version",
+                "value": "2026-07"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ {\n  \"documents\": $json.documents\n} }}",
+          "options": {
+            "response": {
+              "response": {
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "id": "1e0abe5e-c53b-4689-8b65-74c88ef6a842",
+        "name": "Upsert to Pinecone",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          688,
+          0
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "tLksH8FaxQcpV95M",
+            "name": "Pinecone Header Auth"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "functionCode": "const responses = $input.all();\nconst formattedItems = $('Format for Pinecone').all();\nconst filesProcessed = $('Parse Input').all().length;\n\nif (responses.length !== formattedItems.length || responses.length !== filesProcessed) {\n  throw new Error(`Upsert item count mismatch: responses=${responses.length}, documents=${formattedItems.length}, files=${filesProcessed}`);\n}\n\nlet totalUpserted = 0;\nconst fileResults = responses.map((item, index) => {\n  const response = item.json || {};\n  const body = response.body && typeof response.body === 'object' ? response.body : response;\n  const upsertedCount = body.upserted_count ?? body.upsertedCount;\n\n  if (!Number.isInteger(upsertedCount)) {\n    throw new Error(`Pinecone response for file ${index + 1} has no integer upserted_count: ${JSON.stringify(response)}`);\n  }\n  if (upsertedCount !== formattedItems[index].json.documentsCount) {\n    throw new Error(`Pinecone upsert count mismatch for file ${index + 1}: expected=${formattedItems[index].json.documentsCount}, actual=${upsertedCount}`);\n  }\n\n  totalUpserted += upsertedCount;\n  return { fileIndex: index + 1, upserted: upsertedCount };\n});\n\nreturn [{\n  json: {\n    status: 'success',\n    totalFiles: filesProcessed,\n    totalUpserted,\n    fileResults\n  }\n}];"
+        },
+        "id": "4a047060-1038-4cb9-87d6-058f770d884d",
+        "name": "Aggregate Results",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          880,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json }}",
+          "options": {}
+        },
+        "id": "bb6eea5e-b1de-4268-947f-28fa082c6603",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          1056,
+          0
+        ]
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Parse Input",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Input": {
+        "main": [
+          [
+            {
+              "node": "Chunk Text",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Chunk Text": {
+        "main": [
+          [
+            {
+              "node": "Format for Pinecone",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format for Pinecone": {
+        "main": [
+          [
+            {
+              "node": "Upsert to Pinecone",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Upsert to Pinecone": {
+        "main": [
+          [
+            {
+              "node": "Aggregate Results",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Aggregate Results": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "instanceId": "b111416093a3f13c8305b0051cf2e1ae136c2858c7cc82d15088245f0e537d53"
+    },
+    "nodeGroups": [],
+    "pinData": {},
+    "versionId": "a5c477c8-0e64-42ea-9ad8-ab74bf27d8de",
+    "activeVersionId": "a5c477c8-0e64-42ea-9ad8-ab74bf27d8de",
+    "versionCounter": 71,
+    "triggerCount": 1,
+    "sourceWorkflowId": null,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-11-05T07:15:12.085Z",
+        "createdAt": "2026-11-05T07:15:12.085Z",
+        "role": "workflow:owner",
+        "workflowId": "0uPmTdCytfVTjCnH",
+        "projectId": "xBf5ODz9ZFhI7Mrj",
+        "project": {
+          "updatedAt": "2026-07-19T01:39:32.404Z",
+          "createdAt": "2026-07-19T01:20:07.809Z",
+          "id": "xBf5ODz9ZFhI7Mrj",
+          "name": "Alex Egor <Personal project>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "customTelemetryTags": [],
+          "creatorId": "e00d38d5-1185-4787-bc59-855b56fbce33"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": null,
+      "description": null
+    }
+  }
+]

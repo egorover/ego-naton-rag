@@ -1,0 +1,197 @@
+[
+  {
+    "updatedAt": "2026-11-05T20:37:23.000Z",
+    "createdAt": "2026-11-05T07:15:44.009Z",
+    "id": "wDFKYRpZa4FMc3Ln",
+    "name": "5.05.4 DS - Pinecone Search Workflow",
+    "description": null,
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "pinecone-search",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "id": "c011cb75-aa2f-46b1-a71b-995d3afd9481",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [
+          0,
+          0
+        ],
+        "webhookId": "pinecone-search-webhook"
+      },
+      {
+        "parameters": {
+          "functionCode": "const inputItem = $input.item;\nconst body = inputItem?.json?.body || inputItem?.json || {};\n\nconst query = body.query || body.body?.query;\n\nif (!query || typeof query !== 'string') {\n  throw new Error(`Query field is required. Received: ${JSON.stringify(body)}`);\n}\n\nreturn [{\n  json: {\n    query: query,\n    namespace: body.namespace || 'default'\n  }\n}];"
+        },
+        "id": "a501cd2b-063c-438c-a48e-cc9b054655bb",
+        "name": "Process Query",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          224,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ 'https://n8n-ai-index-1pi8qek.svc.aped-4627-b74a.pinecone.io/namespaces/' + encodeURIComponent($('Process Query').item.json.namespace) + '/documents/search' }}",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "X-Pinecone-Api-Version",
+                "value": "2026-07"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ {\n  \"score_by\": [{\n    \"type\": \"embed\",\n    \"fields\": [\"chunk_text\"],\n    \"query\": $('Process Query').item.json.query\n  }],\n  \"top_k\": 5,\n  \"include_fields\": [\"chunk_text\", \"title\", \"source\", \"chunk_index\"]\n} }}",
+          "options": {}
+        },
+        "id": "99998a96-28e3-4f83-a820-181bde737314",
+        "name": "Query Pinecone",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          448,
+          0
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "tLksH8FaxQcpV95M",
+            "name": "Pinecone Header Auth"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "functionCode": "const response = $input.item.json || {};\nconst hits = response.result?.hits || response.hits || response.result?.matches || response.matches || [];\n\nif (!Array.isArray(hits)) {\n  throw new Error(`Invalid Pinecone document-search response: ${JSON.stringify(response)}`);\n}\n\nconst results = hits.map(hit => {\n  const fields = hit.fields || hit.metadata || hit;\n  return {\n    text: fields.chunk_text || fields.text || fields.content || '',\n    score: hit._score ?? hit.score ?? 0,\n    source: fields.source || fields.title || 'unknown',\n    chunk_index: fields.chunk_index ?? -1,\n    id: hit._id || hit.id || ''\n  };\n});\n\nreturn [{\n  json: {\n    results,\n    context: results.map(result => result.text).filter(Boolean).join('\\n\\n')\n  }\n}];"
+        },
+        "id": "2fd856b6-cba5-44b3-a156-2f316ef340e9",
+        "name": "Format Results",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          672,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json.results }}",
+          "options": {}
+        },
+        "id": "bb215a6c-433d-4d1d-b29e-68a9121c2e8b",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          880,
+          0
+        ]
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Process Query",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Process Query": {
+        "main": [
+          [
+            {
+              "node": "Query Pinecone",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Query Pinecone": {
+        "main": [
+          [
+            {
+              "node": "Format Results",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Results": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "instanceId": "b111416093a3f13c8305b0051cf2e1ae136c2858c7cc82d15088245f0e537d53"
+    },
+    "nodeGroups": [],
+    "pinData": {},
+    "versionId": "5d667031-0cf9-4c05-b23f-10d7530133da",
+    "activeVersionId": "5d667031-0cf9-4c05-b23f-10d7530133da",
+    "versionCounter": 10,
+    "triggerCount": 1,
+    "sourceWorkflowId": null,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-11-05T07:15:44.018Z",
+        "createdAt": "2026-11-05T07:15:44.018Z",
+        "role": "workflow:owner",
+        "workflowId": "wDFKYRpZa4FMc3Ln",
+        "projectId": "xBf5ODz9ZFhI7Mrj",
+        "project": {
+          "updatedAt": "2026-07-19T01:39:32.404Z",
+          "createdAt": "2026-07-19T01:20:07.809Z",
+          "id": "xBf5ODz9ZFhI7Mrj",
+          "name": "Alex Egor <Personal project>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "customTelemetryTags": [],
+          "creatorId": "e00d38d5-1185-4787-bc59-855b56fbce33"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": null,
+      "description": null
+    }
+  }
+]
